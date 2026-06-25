@@ -1,0 +1,18 @@
+```# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Binaries
+*.so
+
+# Project specific outputs and examples
+out/
+example/
+examples/
+sdk/
+
+# USD artifacts
+*.usd
+*.usda
+*.usdc
