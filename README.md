@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# fbx2usdmatx
-FBX to USD/MaterialX convertor. Python script, uses Blender
-=======
 # FBX to USD Kitbash Converter
 
 A specialized Python utility designed to convert complex FBX kitbash libraries into modular, production-ready USD assets with high-fidelity MaterialX shading.
@@ -65,4 +61,3 @@ Each asset USD contains:
 ## License
 
 MIT
->>>>>>> 085e98f (Initial release of FBX to USD Kitbash Converter)
