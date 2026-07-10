@@ -1,11 +1,12 @@
-```#!/usr/bin/env python3
+#!/usr/bin/env python3
 
+import argparse
 import os
 import sys
-import argparse
 
-# Ensure local directory is searched for the FBX SDK
+# Ensure local directory and src directory are searched for the FBX SDK
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 try:
     import fbx
@@ -22,6 +23,7 @@ fbx2usdmatx
 A specialized utility to convert FBX scenes into modular USD assets
 with full MaterialX Standard Surface shading and USD Preview support.
 """
+
 
 class FBXToUSDMatX:
     def __init__(self, input_fbx, output_dir, tex_dir=None):
@@ -41,11 +43,13 @@ class FBXToUSDMatX:
 
         for sub in subfolders:
             d = os.path.join(self.tex_dir, sub)
-            if not os.path.isdir(d): continue
+            if not os.path.isdir(d):
+                continue
             for pattern in search_patterns:
                 for ext in extensions:
                     path = os.path.join(d, pattern + ext)
-                    if os.path.exists(path): return path
+                    if os.path.exists(path):
+                        return path
         return None
 
     def create_mtlx_material(self, stage, mtl_path):
@@ -58,7 +62,9 @@ class FBXToUSDMatX:
         list_op = Sdf.TokenListOp()
         list_op.prependedItems = ["MaterialXConfigAPI"]
         prim.SetMetadata("apiSchemas", list_op)
-        prim.CreateAttribute("config:mtlx:version", Sdf.ValueTypeNames.String).Set("1.39")
+        prim.CreateAttribute("config:mtlx:version", Sdf.ValueTypeNames.String).Set(
+            "1.39"
+        )
 
         # Define terminals
         mtlx_surf = material.CreateOutput("mtlx:surface", Sdf.ValueTypeNames.Token)
@@ -66,35 +72,48 @@ class FBXToUSDMatX:
         usd_surf = material.CreateOutput("surface", Sdf.ValueTypeNames.Token)
 
         # 1. Main MaterialX Shader
-        shader = UsdShade.Shader.Define(stage, mtl_path.AppendChild("mtlxstandard_surface"))
+        shader = UsdShade.Shader.Define(
+            stage, mtl_path.AppendChild("mtlxstandard_surface")
+        )
         shader.CreateIdAttr("ND_standard_surface_surfaceshader")
         mtlx_surf.ConnectToSource(shader.ConnectableAPI(), "out")
 
         # 2. USD Preview Shader (Viewport)
-        preview = UsdShade.Shader.Define(stage, mtl_path.AppendChild("mtlxstandard_preview"))
+        preview = UsdShade.Shader.Define(
+            stage, mtl_path.AppendChild("mtlxstandard_preview")
+        )
         preview.CreateIdAttr("UsdPreviewSurface")
         usd_surf.ConnectToSource(preview.ConnectableAPI(), "surface")
 
         # 3. Displacement stub
-        displace = UsdShade.Shader.Define(stage, mtl_path.AppendChild("mtlxdisplacement"))
+        displace = UsdShade.Shader.Define(
+            stage, mtl_path.AppendChild("mtlxdisplacement")
+        )
         displace.CreateIdAttr("ND_displacement_float")
         mtlx_disp.ConnectToSource(displace.ConnectableAPI(), "out")
 
         # 4. Preview UV Primvar Reader
-        uv_reader = UsdShade.Shader.Define(stage, mtl_path.AppendChild("mtlxstandard_preview_uv"))
+        uv_reader = UsdShade.Shader.Define(
+            stage, mtl_path.AppendChild("mtlxstandard_preview_uv")
+        )
         uv_reader.CreateIdAttr("UsdPrimvarReader_float2")
         uv_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
         uv_out = uv_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 
         def hook_tex(suffix, surf_in, prev_in, node_id, is_color=True):
             tex_path = self.find_texture(mtl_name, suffix)
-            if not tex_path: return None
+            if not tex_path:
+                return None
 
-            img = UsdShade.Shader.Define(stage, mtl_path.AppendChild(f"mtlximage_{suffix}"))
+            img = UsdShade.Shader.Define(
+                stage, mtl_path.AppendChild(f"mtlximage_{suffix}")
+            )
             img.CreateIdAttr(node_id)
             img.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(tex_path)
 
-            out_type = Sdf.ValueTypeNames.Color3f if is_color else Sdf.ValueTypeNames.Float
+            out_type = (
+                Sdf.ValueTypeNames.Color3f if is_color else Sdf.ValueTypeNames.Float
+            )
             img_out = img.CreateOutput("out", out_type)
 
             # Connect to MaterialX
@@ -102,30 +121,47 @@ class FBXToUSDMatX:
 
             # Connect to Preview
             if prev_in:
-                prev_tex = UsdShade.Shader.Define(stage, mtl_path.AppendChild(f"mtlxstandard_preview_texture_{prev_in}"))
+                prev_tex = UsdShade.Shader.Define(
+                    stage,
+                    mtl_path.AppendChild(f"mtlxstandard_preview_texture_{prev_in}"),
+                )
                 prev_tex.CreateIdAttr("UsdUVTexture")
                 prev_tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(tex_path)
-                prev_tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(uv_out)
+                prev_tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
+                    uv_out
+                )
 
                 p_out_name = "rgb" if is_color else "r"
-                p_out_type = Sdf.ValueTypeNames.Color3f if is_color else Sdf.ValueTypeNames.Float
-                preview.CreateInput(prev_in, p_out_type).ConnectToSource(prev_tex.CreateOutput(p_out_name, p_out_type))
+                p_out_type = (
+                    Sdf.ValueTypeNames.Color3f if is_color else Sdf.ValueTypeNames.Float
+                )
+                preview.CreateInput(prev_in, p_out_type).ConnectToSource(
+                    prev_tex.CreateOutput(p_out_name, p_out_type)
+                )
             return img_out
 
         hook_tex("basecolor", "base_color", "diffuseColor", "ND_image_color3")
-        hook_tex("roughness", "specular_roughness", "roughness", "ND_image_float", False)
+        hook_tex(
+            "roughness", "specular_roughness", "roughness", "ND_image_float", False
+        )
         hook_tex("metallic", "metalness", "metallic", "ND_image_float", False)
 
         normal_path = self.find_texture(mtl_name, "normal")
         if normal_path:
-            img = UsdShade.Shader.Define(stage, mtl_path.AppendChild("mtlximage_normal"))
+            img = UsdShade.Shader.Define(
+                stage, mtl_path.AppendChild("mtlximage_normal")
+            )
             img.CreateIdAttr("ND_image_vector3")
             img.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(normal_path)
 
             nmap = UsdShade.Shader.Define(stage, mtl_path.AppendChild("mtlxnormalmap"))
             nmap.CreateIdAttr("ND_normalmap_vector3")
-            nmap.CreateInput("in", Sdf.ValueTypeNames.Vector3f).ConnectToSource(img.CreateOutput("out", Sdf.ValueTypeNames.Vector3f))
-            shader.CreateInput("normal", Sdf.ValueTypeNames.Vector3f).ConnectToSource(nmap.ConnectableAPI(), "out")
+            nmap.CreateInput("in", Sdf.ValueTypeNames.Vector3f).ConnectToSource(
+                img.CreateOutput("out", Sdf.ValueTypeNames.Vector3f)
+            )
+            shader.CreateInput("normal", Sdf.ValueTypeNames.Vector3f).ConnectToSource(
+                nmap.ConnectableAPI(), "out"
+            )
 
         return material
 
@@ -146,7 +182,9 @@ class FBXToUSDMatX:
         def get_mtl(fbx_mtl):
             m_name = fbx_mtl.GetName().replace(":", "_").replace(" ", "_")
             if m_name not in local_materials:
-                local_materials[m_name] = self.create_mtlx_material(stage, mtl_scope.GetPath().AppendChild(m_name))
+                local_materials[m_name] = self.create_mtlx_material(
+                    stage, mtl_scope.GetPath().AppendChild(m_name)
+                )
             return local_materials[m_name]
 
         def process_node(node, parent_path):
@@ -163,16 +201,41 @@ class FBXToUSDMatX:
                 gt = node.EvaluateGlobalTransform()
 
                 # Geometry Data
-                pts = [Gf.Vec3f(gt.MultT(p)[0], gt.MultT(p)[1], gt.MultT(p)[2]) for p in fbx_mesh.GetControlPoints()]
+                pts = [
+                    Gf.Vec3f(gt.MultT(p)[0], gt.MultT(p)[1], gt.MultT(p)[2])
+                    for p in fbx_mesh.GetControlPoints()
+                ]
                 usd_mesh.CreatePointsAttr(pts)
-                usd_mesh.CreateFaceVertexCountsAttr([fbx_mesh.GetPolygonSize(f) for f in range(fbx_mesh.GetPolygonCount())])
-                usd_mesh.CreateFaceVertexIndicesAttr([fbx_mesh.GetPolygonVertex(f, v) for f in range(fbx_mesh.GetPolygonCount()) for v in range(fbx_mesh.GetPolygonSize(f))])
+                usd_mesh.CreateFaceVertexCountsAttr(
+                    [
+                        fbx_mesh.GetPolygonSize(f)
+                        for f in range(fbx_mesh.GetPolygonCount())
+                    ]
+                )
+                usd_mesh.CreateFaceVertexIndicesAttr(
+                    [
+                        fbx_mesh.GetPolygonVertex(f, v)
+                        for f in range(fbx_mesh.GetPolygonCount())
+                        for v in range(fbx_mesh.GetPolygonSize(f))
+                    ]
+                )
 
                 # UV Data (st)
                 if fbx_mesh.GetElementUVCount() > 0:
                     uvs = fbx_mesh.GetElementUV(0).GetDirectArray()
-                    st = [Gf.Vec2f(uvs.GetAt(fbx_mesh.GetTextureUVIndex(f, v))[0], uvs.GetAt(fbx_mesh.GetTextureUVIndex(f, v))[1]) for f in range(fbx_mesh.GetPolygonCount()) for v in range(fbx_mesh.GetPolygonSize(f))]
-                    UsdGeom.PrimvarsAPI(usd_mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying).Set(st)
+                    st = [
+                        Gf.Vec2f(
+                            uvs.GetAt(fbx_mesh.GetTextureUVIndex(f, v))[0],
+                            uvs.GetAt(fbx_mesh.GetTextureUVIndex(f, v))[1],
+                        )
+                        for f in range(fbx_mesh.GetPolygonCount())
+                        for v in range(fbx_mesh.GetPolygonSize(f))
+                    ]
+                    UsdGeom.PrimvarsAPI(usd_mesh).CreatePrimvar(
+                        "st",
+                        Sdf.ValueTypeNames.TexCoord2fArray,
+                        UsdGeom.Tokens.faceVarying,
+                    ).Set(st)
 
                 # Material Binding (Subset Support)
                 mtl_el = fbx_mesh.GetElementMaterial(0)
@@ -183,21 +246,38 @@ class FBXToUSDMatX:
                     indices = mtl_el.GetIndexArray()
                     for f in range(fbx_mesh.GetPolygonCount()):
                         idx = indices.GetAt(f)
-                        if idx not in polys_by_mtl: polys_by_mtl[idx] = []
+                        if idx not in polys_by_mtl:
+                            polys_by_mtl[idx] = []
                         polys_by_mtl[idx].append(f)
 
                     for idx, faces in polys_by_mtl.items():
                         if idx < mtl_count:
                             fbx_mtl = node.GetMaterial(idx)
                             subset_name = f"mat_{fbx_mtl.GetName().replace(':', '_').replace(' ', '_')}"
-                            subset = UsdGeom.Subset.CreateGeomSubset(usd_mesh, subset_name, UsdGeom.Tokens.face, faces, UsdShade.Tokens.materialBind)
-                            UsdGeom.Subset.SetFamilyType(usd_mesh, UsdShade.Tokens.materialBind, UsdGeom.Tokens.partition)
-                            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(get_mtl(fbx_mtl))
+                            subset = UsdGeom.Subset.CreateGeomSubset(
+                                usd_mesh,
+                                subset_name,
+                                UsdGeom.Tokens.face,
+                                faces,
+                                UsdShade.Tokens.materialBind,
+                            )
+                            UsdGeom.Subset.SetFamilyType(
+                                usd_mesh,
+                                UsdShade.Tokens.materialBind,
+                                UsdGeom.Tokens.partition,
+                            )
+                            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(
+                                get_mtl(fbx_mtl)
+                            )
                 elif mtl_count > 0:
-                    UsdShade.MaterialBindingAPI(usd_mesh.GetPrim()).Bind(get_mtl(node.GetMaterial(0)))
+                    UsdShade.MaterialBindingAPI(usd_mesh.GetPrim()).Bind(
+                        get_mtl(node.GetMaterial(0))
+                    )
 
             elif node != fbx_node:
-                cur_path = parent_path.AppendChild(node.GetName().replace(":", "_").replace(" ", "_"))
+                cur_path = parent_path.AppendChild(
+                    node.GetName().replace(":", "_").replace(" ", "_")
+                )
                 UsdGeom.Xform.Define(stage, cur_path)
 
             for i in range(node.GetChildCount()):
@@ -223,7 +303,10 @@ class FBXToUSDMatX:
         fbx.FbxAxisSystem.MayaYUp.ConvertScene(scene)
         fbx.FbxSystemUnit.m.ConvertScene(scene)
 
-        master_path = os.path.join(self.output_dir, os.path.splitext(os.path.basename(self.input_fbx))[0] + "_master.usd")
+        master_path = os.path.join(
+            self.output_dir,
+            os.path.splitext(os.path.basename(self.input_fbx))[0] + "_master.usd",
+        )
         master_stage = Usd.Stage.CreateNew(master_path)
         UsdGeom.SetStageUpAxis(master_stage, UsdGeom.Tokens.y)
         root = UsdGeom.Xform.Define(master_stage, "/root")
@@ -240,20 +323,26 @@ class FBXToUSDMatX:
             # Reference in assembly
             ref_path = root.GetPath().AppendChild(asset_name)
             ref_prim = master_stage.OverridePrim(ref_path)
-            ref_prim.GetReferences().AddReference(os.path.relpath(asset_usd, self.output_dir))
+            ref_prim.GetReferences().AddReference(
+                os.path.relpath(asset_usd, self.output_dir)
+            )
 
         master_stage.GetRootLayer().Save()
         print(f"\nSuccessfully converted FBX to MatX-enabled USD.")
         print(f"Master Assembly: {master_path}")
         manager.Destroy()
 
+
 if __name__ == "__main__":
-    if "OCIO" in os.environ: del os.environ["OCIO"]
+    if "OCIO" in os.environ:
+        del os.environ["OCIO"]
 
     parser = argparse.ArgumentParser(description="FBX to USD + MaterialX Converter")
     parser.add_argument("input", help="Path to input FBX file")
     parser.add_argument("output", help="Output directory")
-    parser.add_argument("--textures", help="Optional override for texture search directory")
+    parser.add_argument(
+        "--textures", help="Optional override for texture search directory"
+    )
 
     if "--" in sys.argv:
         cli_args = parser.parse_args(sys.argv[sys.argv.index("--") + 1 :])
