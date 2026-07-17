@@ -35,11 +35,107 @@ class FBXToUSDMatX:
         if not os.path.exists(self.assets_dir):
             os.makedirs(self.assets_dir)
 
-    def find_texture(self, mtl_name, suffix):
-        """Searches for textures with common suffixes and extensions."""
+    def find_texture(self, mtl_name, suffix, fbx_mtl=None):
+        """Searches for textures using MaterialX naming conventions OR actual FBX texture links."""
+        # 1. Try to find actual texture from FBX Material properties
+        if fbx_mtl:
+            # Map suffix to FBX property names
+            prop_map = {
+                "basecolor": [
+                    "DiffuseColor",
+                    "Diffuse",
+                    "base_color_map",
+                    "diffuse_map",
+                ],
+                "roughness": ["ReflectionFactor", "Shininess", "roughness_map"],
+                "normal": ["NormalMap", "Bump", "normal_map"],
+                "metallic": ["Reflection", "metalness_map"],
+            }
+
+            for prop_key in prop_map.get(suffix, []):
+                prop = fbx_mtl.FindProperty(prop_key)
+                if not prop.IsValid():
+                    # Fallback: scan all properties for texture connections if primary keys fail
+                    p = fbx_mtl.GetFirstProperty()
+                    while p.IsValid():
+                        if (
+                            p.GetSrcObjectCount(
+                                fbx.FbxCriteria.ObjectType(fbx.FbxFileTexture.ClassId)
+                            )
+                            > 0
+                        ):
+                            print(f"    Scanning prop: {p.GetName()} for {suffix}")
+                            # Check if the property name contains the suffix (e.g. 'Diffuse')
+                            if suffix == "basecolor" and any(
+                                x in p.GetName() for x in ["Diffuse", "Color"]
+                            ):
+                                prop = p
+                                break
+                            if suffix == "normal" and any(
+                                x in p.GetName() for x in ["Normal", "Bump"]
+                            ):
+                                prop = p
+                                break
+                        p = fbx_mtl.GetNextProperty(p)
+
+                if not prop or not prop.IsValid():
+                    continue
+
+                # Check for texture connected to property
+                tex_count = prop.GetSrcObjectCount(
+                    fbx.FbxCriteria.ObjectType(fbx.FbxFileTexture.ClassId)
+                )
+                if tex_count > 0:
+                    print(f"    FOUND {tex_count} textures on {prop.GetName()}")
+                    tex = prop.GetSrcObject(
+                        fbx.FbxCriteria.ObjectType(fbx.FbxFileTexture.ClassId), 0
+                    )
+                    fbx_path = tex.GetFileName()
+                    if fbx_path:
+                        # Handle Windows paths in FBX on Linux
+                        filename = fbx_path.replace("\\", "/").split("/")[-1]
+                        print(
+                            f"    Checking filename: '{filename}' from {prop.GetName()} (dir: {self.tex_dir})"
+                        )
+                        # Search for this specific filename in texture directories
+                        subfolders = [
+                            ".",
+                            "KB3DTextures",
+                            "KB3DTextures/4k",
+                            "Textures",
+                            "textures",
+                            "photo",
+                        ]
+                        for sub in subfolders:
+                            d = os.path.join(self.tex_dir, sub)
+                            if not os.path.isdir(d):
+                                continue
+                            path = os.path.join(d, filename)
+                            # CASE-INSENSITIVE CHECK
+                            if not os.path.exists(path):
+                                for f in os.listdir(d):
+                                    if f.lower() == filename.lower():
+                                        path = os.path.join(d, f)
+                                        break
+
+                            if os.path.exists(path):
+                                # Convert to absolute path for USD
+                                abs_path = os.path.abspath(path)
+                                print(f"  [Found Texture] {suffix}: {abs_path}")
+                                return abs_path
+            print(f"  [Missing Texture] {suffix} (checked {prop_map.get(suffix)})")
+
+        # 2. Fallback to name-based pattern matching
         extensions = [".png", ".jpg", ".tga", ".exr", ".tif"]
         search_patterns = [f"{mtl_name}_{suffix}", f"{mtl_name}{suffix}"]
-        subfolders = [".", "KB3DTextures", "KB3DTextures/4k", "Textures", "textures"]
+        subfolders = [
+            ".",
+            "KB3DTextures",
+            "KB3DTextures/4k",
+            "Textures",
+            "textures",
+            "photo",
+        ]
 
         for sub in subfolders:
             d = os.path.join(self.tex_dir, sub)
@@ -52,7 +148,7 @@ class FBXToUSDMatX:
                         return path
         return None
 
-    def create_mtlx_material(self, stage, mtl_path):
+    def create_mtlx_material(self, stage, mtl_path, fbx_mtl=None):
         """Creates a MaterialX Standard Surface + USD Preview shading network."""
         material = UsdShade.Material.Define(stage, mtl_path)
         mtl_name = mtl_path.name
@@ -101,7 +197,7 @@ class FBXToUSDMatX:
         uv_out = uv_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
 
         def hook_tex(suffix, surf_in, prev_in, node_id, is_color=True):
-            tex_path = self.find_texture(mtl_name, suffix)
+            tex_path = self.find_texture(mtl_name, suffix, fbx_mtl)
             if not tex_path:
                 return None
 
@@ -146,7 +242,7 @@ class FBXToUSDMatX:
         )
         hook_tex("metallic", "metalness", "metallic", "ND_image_float", False)
 
-        normal_path = self.find_texture(mtl_name, "normal")
+        normal_path = self.find_texture(mtl_name, "normal", fbx_mtl)
         if normal_path:
             img = UsdShade.Shader.Define(
                 stage, mtl_path.AppendChild("mtlximage_normal")
@@ -180,10 +276,12 @@ class FBXToUSDMatX:
         local_materials = {}
 
         def get_mtl(fbx_mtl):
-            m_name = fbx_mtl.GetName().replace(":", "_").replace(" ", "_")
+            m_name = (
+                fbx_mtl.GetName().replace(":", "_").replace(" ", "_").replace("#", "_")
+            )
             if m_name not in local_materials:
                 local_materials[m_name] = self.create_mtlx_material(
-                    stage, mtl_scope.GetPath().AppendChild(m_name)
+                    stage, mtl_scope.GetPath().AppendChild(m_name), fbx_mtl
                 )
             return local_materials[m_name]
 
@@ -253,7 +351,7 @@ class FBXToUSDMatX:
                     for idx, faces in polys_by_mtl.items():
                         if idx < mtl_count:
                             fbx_mtl = node.GetMaterial(idx)
-                            subset_name = f"mat_{fbx_mtl.GetName().replace(':', '_').replace(' ', '_')}"
+                            subset_name = f"mat_{fbx_mtl.GetName().replace(':', '_').replace(' ', '_').replace('#', '_')}"
                             subset = UsdGeom.Subset.CreateGeomSubset(
                                 usd_mesh,
                                 subset_name,
